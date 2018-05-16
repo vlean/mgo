@@ -44,7 +44,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/globalsign/mgo/bson"
+	"github.com/vinllen/mgo/bson"
 )
 
 // Mode read preference mode. See Eventual, Monotonic and Strong for details
@@ -866,6 +866,17 @@ func (db *Database) runOnSocket(socket *mongoSocket, cmd interface{}, result int
 	socket.Acquire()
 	defer socket.Release()
 	return db.run(socket, cmd, result)
+}
+
+// support RunCommand interface
+func (db *Database) RunCommand(commandName string, commandArgs, metadata, docs, result interface{}) error {
+	socket, err := db.Session.acquireSocket(true)
+	if err != nil {
+		return err
+	}
+	defer socket.Release()
+
+	return db.runCommand(socket, commandName, commandArgs, metadata, docs, result)
 }
 
 // Credential holds details to authenticate with a MongoDB server.
@@ -2805,6 +2816,14 @@ func (err *LastError) Error() string {
 	return err.Err
 }
 
+type CmdError struct {
+	Ok          int64                    `bson:"ok"`
+	N           int64                    `bson:"n"`
+	Code           int                    `bson:"code"`
+	ErrMsg      string                   `bson:"errmsg"`
+	WriteErrors []map[string]interface{} `bson:"writeErrors"`
+}
+
 type queryError struct {
 	Err           string `bson:"$err"`
 	ErrMsg        string
@@ -3705,6 +3724,57 @@ type getMoreCmd struct {
 	Collection string `bson:"collection"`
 	BatchSize  int32  `bson:"batchSize,omitempty"`
 	MaxTimeMS  int64  `bson:"maxTimeMS,omitempty"`
+}
+
+func (db *Database) runCommand(socket *mongoSocket, commandName string, commandArgs, metadata, docs, out interface{}) error {
+	var wait, change sync.Mutex
+	var replyDone bool
+	var replyErr error
+	wait.Lock()
+	op := &commandOp{db.Name, commandName, commandArgs, metadata, docs, func(err error, reply *replyOp, docNum int, docData []byte) {
+		change.Lock()
+		defer change.Unlock()
+		defer wait.Unlock()
+		if err != nil {
+			replyErr = err
+			return
+		}
+		result := &CmdError{}
+		bson.Unmarshal(docData, result)
+		if out != nil {
+			bson.Unmarshal(docData, out)
+		}
+
+		if result.Ok != 1 || len(result.WriteErrors) != 0 {
+			Error := &LastError{}
+			if len(result.WriteErrors) != 0 {
+				Error.Code = result.WriteErrors[0]["code"].(int)
+				Error.Err = result.WriteErrors[0]["errmsg"].(string)
+			} else if len(result.ErrMsg) != 0 {
+				Error.Code = result.Code
+				Error.Err = result.ErrMsg
+			} else {
+				Error.Code = -1
+				Error.Err = fmt.Sprintf("Unkown error : %v", result)
+			}
+			replyErr = Error
+		}
+
+		if !replyDone {
+			replyDone = true
+		}
+	}}
+
+	err := socket.Query(op)
+
+	if err != nil {
+		return err
+	}
+	wait.Lock()
+	change.Lock()
+	err = replyErr
+	change.Unlock()
+	return err
 }
 
 // run duplicates the behavior of collection.Find(query).One(&result)

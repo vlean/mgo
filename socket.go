@@ -33,7 +33,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/globalsign/mgo/bson"
+	"github.com/vinllen/mgo/bson"
 )
 
 type replyFunc func(err error, reply *replyOp, docNum int, docData []byte)
@@ -174,6 +174,19 @@ type deleteOp struct {
 
 type killCursorsOp struct {
 	cursorIds []int64
+}
+
+// OP_COMMAND request struct. the order of commandArgs and metadata
+// is opposite each other. corret order see source {command_request.cpp}
+// DON'T consult https://docs.mongodb.com/manual/reference/mongodb-wire-protocol/
+type commandOp struct {
+	database    string
+	commandName string
+	commandArgs interface{}
+	metadata    interface{}
+	docs interface{}
+
+	replyFunc  replyFunc
 }
 
 type requestInfo struct {
@@ -505,6 +518,24 @@ func (socket *mongoSocket) Query(ops ...interface{}) (err error) {
 				buf = addInt64(buf, cursorId)
 			}
 
+		case *commandOp:
+			buf = addHeader(buf, 2010)
+			buf = addCString(buf, op.database)    // database name
+			buf = addCString(buf, op.commandName) // command name
+			buf, err = addBSON(buf, op.commandArgs)	// command args
+			if err != nil {
+				return err
+			}
+			buf, err = addBSON(buf, op.metadata)  // metadata
+			if err != nil {
+				return err
+			}
+			buf, err = addBSON(buf, op.docs)
+			if err != nil {
+				return err
+			}
+			replyFunc = op.replyFunc
+
 		default:
 			panic("internal error: unknown operation type")
 		}
@@ -577,10 +608,12 @@ func fill(r net.Conn, b []byte) error {
 // Estimated minimum cost per socket: 1 goroutine + memory for the largest
 // document ever seen.
 func (socket *mongoSocket) readLoop() {
-	p := make([]byte, 36) // 16 from header + 20 from OP_REPLY fixed fields
+	// p := make([]byte, 36) // 16 from header + 20 from OP_REPLY fixed fields
+	p := make([]byte, 16) // only fetch header 16 bytes
 	s := make([]byte, 4)
 	conn := socket.conn // No locking, conn never changes.
 	for {
+		// XXX Handle timeouts, , etc
 		err := fill(conn, p)
 		if err != nil {
 			socket.kill(err, true)
@@ -597,83 +630,168 @@ func (socket *mongoSocket) readLoop() {
 
 		_ = totalLen
 
-		if opCode != 1 {
-			socket.kill(errors.New("opcode != 1, corrupted data?"), true)
+		// REPLY opcode may be 1(OP_REPLY) or 2011(OP_COMMANDREPLY)
+		if opCode != 1 && opCode != 2011 {
+			socket.kill(errors.New("opcode != 1 && opcode != 2011, corrupted data?"), true)
 			return
 		}
 
-		reply := replyOp{
-			flags:     uint32(getInt32(p, 16)),
-			cursorId:  getInt64(p, 20),
-			firstDoc:  getInt32(p, 28),
-			replyDocs: getInt32(p, 32),
-		}
+		switch opCode {
+		case 2011:
+			stats.receivedOps(+1)
+			stats.receivedDocs(+1)
 
-		stats.receivedOps(+1)
-		stats.receivedDocs(int(reply.replyDocs))
+			fakeReply := replyOp{}
 
-		socket.Lock()
-		replyFunc, ok := socket.replyFuncs[uint32(responseTo)]
-		if ok {
-			delete(socket.replyFuncs, uint32(responseTo))
-		}
-		socket.Unlock()
-
-		if replyFunc != nil && reply.replyDocs == 0 {
-			replyFunc(nil, &reply, -1, nil)
-		} else {
-			for i := 0; i != int(reply.replyDocs); i++ {
-				err := fill(conn, s)
-				if err != nil {
-					if replyFunc != nil {
-						replyFunc(err, nil, -1, nil)
-					}
-					socket.kill(err, true)
-					return
-				}
-
-				b := make([]byte, int(getInt32(s, 0)))
-
-				// copy(b, s) in an efficient way.
-				b[0] = s[0]
-				b[1] = s[1]
-				b[2] = s[2]
-				b[3] = s[3]
-
-				err = fill(conn, b[4:])
-				if err != nil {
-					if replyFunc != nil {
-						replyFunc(err, nil, -1, nil)
-					}
-					socket.kill(err, true)
-					return
-				}
-
-				if globalDebug && globalLogger != nil {
-					m := bson.M{}
-					if err := bson.Unmarshal(b, m); err == nil {
-						debugf("Socket %p to %s: received document: %#v", socket, socket.addr, m)
-					}
-				}
-
-				if replyFunc != nil {
-					replyFunc(nil, &reply, i, b)
-				}
-
-				// XXX Do bound checking against totalLen.
+			socket.Lock()
+			replyFunc, ok := socket.replyFuncs[uint32(responseTo)]
+			if ok {
+				delete(socket.replyFuncs, uint32(responseTo))
 			}
-		}
+			socket.Unlock()
 
-		socket.Lock()
-		if len(socket.replyFuncs) == 0 {
-			// Nothing else to read for now. Disable deadline.
-			socket.conn.SetReadDeadline(time.Time{})
-		} else {
-			socket.updateDeadline(readDeadline)
-		}
-		socket.Unlock()
+			totalLen -= 16
+
+			if replyFunc != nil && totalLen == 16 {
+				// no docs here
+				replyFunc(nil, &fakeReply, -1, nil)
+			} else {
+				for i := 0; totalLen > 0; i++ {
+					err := fill(conn, s)
+					if err != nil {
+						if replyFunc != nil {
+							replyFunc(err, nil, -1, nil)
+						}
+						socket.kill(err, true)
+						return
+					}
+
+					length := int(getInt32(s, 0))
+					b := make([]byte, length)
+
+					// copy(b, s) in an efficient way.
+					b[0] = s[0]
+					b[1] = s[1]
+					b[2] = s[2]
+					b[3] = s[3]
+
+					err = fill(conn, b[4:])
+					if err != nil {
+						if replyFunc != nil {
+							replyFunc(err, nil, -1, nil)
+						}
+						socket.kill(err, true)
+						return
+					}
+
+					if globalDebug && globalLogger != nil {
+						m := bson.M{}
+						if err := bson.Unmarshal(b, m); err == nil {
+							debugf("Socket %p to %s: received document: %#v", socket, socket.addr, m)
+						}
+					}
+
+					if i == 0 && replyFunc != nil {
+						replyFunc(nil, &fakeReply, i, b)
+					}
+
+					// XXX Do bound checking against totalLen.
+
+					totalLen -= int32(len(b))
+				}
+			}
+
+			socket.Lock()
+			if len(socket.replyFuncs) == 0 {
+				// Nothing else to read for now. Disable deadline.
+				socket.conn.SetReadDeadline(time.Time{})
+			} else {
+				socket.updateDeadline(readDeadline)
+			}
+			socket.Unlock()
+
+		case 1:
+			// read more 20 bytes of OP_REPLY
+			extra := make([]byte, 20)
+			err := fill(conn, extra)
+			if err != nil {
+				socket.kill(err, true)
+				return
+			}
+
+			reply := replyOp{
+				flags:     uint32(getInt32(extra, 0)),
+				cursorId:  getInt64(extra, 4),
+				firstDoc:  getInt32(extra, 12),
+				replyDocs: getInt32(extra, 16),
+			}
+
+			stats.receivedOps(+1)
+			stats.receivedDocs(int(reply.replyDocs))
+
+			socket.Lock()
+			replyFunc, ok := socket.replyFuncs[uint32(responseTo)]
+			if ok {
+				delete(socket.replyFuncs, uint32(responseTo))
+			}
+			socket.Unlock()
+
+			if replyFunc != nil && reply.replyDocs == 0 {
+				replyFunc(nil, &reply, -1, nil)
+			} else {
+				for i := 0; i != int(reply.replyDocs); i++ {
+					err := fill(conn, s)
+					if err != nil {
+						if replyFunc != nil {
+							replyFunc(err, nil, -1, nil)
+						}
+						socket.kill(err, true)
+						return
+					}
+
+					b := make([]byte, int(getInt32(s, 0)))
+
+					// copy(b, s) in an efficient way.
+					b[0] = s[0]
+					b[1] = s[1]
+					b[2] = s[2]
+					b[3] = s[3]
+
+					err = fill(conn, b[4:])
+					if err != nil {
+						if replyFunc != nil {
+							replyFunc(err, nil, -1, nil)
+						}
+						socket.kill(err, true)
+						return
+					}
+
+					if globalDebug && globalLogger != nil {
+						m := bson.M{}
+						if err := bson.Unmarshal(b, m); err == nil {
+							debugf("Socket %p to %s: received document: %#v", socket, socket.addr, m)
+						}
+					}
+
+					if replyFunc != nil {
+						replyFunc(nil, &reply, i, b)
+					}
+
+					// XXX Do bound checking against totalLen.
+				}
+			}
+
+			socket.Lock()
+			if len(socket.replyFuncs) == 0 {
+				// Nothing else to read for now. Disable deadline.
+				socket.conn.SetReadDeadline(time.Time{})
+			} else {
+				socket.updateDeadline(readDeadline)
+			}
+			socket.Unlock()
 
 		// XXX Do bound checking against totalLen.
+		}
 	}
 }
 

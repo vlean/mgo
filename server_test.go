@@ -30,7 +30,7 @@ import (
 	"time"
 
 	. "gopkg.in/check.v1"
-	"github.com/globalsign/mgo"
+	"github.com/vinllen/mgo"
 )
 
 func (s *S) TestServerRecoversFromAbend(c *C) {
