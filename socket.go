@@ -530,10 +530,12 @@ func (socket *mongoSocket) Query(ops ...interface{}) (err error) {
 			if err != nil {
 				return err
 			}
+            // erase to adapt 4.0 version
+            /*
 			buf, err = addBSON(buf, op.docs)
 			if err != nil {
 				return err
-			}
+			}*/
 			replyFunc = op.replyFunc
 
 		default:
