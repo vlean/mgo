@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/vinllen/mgo/bson"
+	"fmt"
 )
 
 // Bulk represents an operation that can be prepared with several
@@ -64,12 +65,17 @@ type BulkError struct {
 	ecases []BulkErrorCase
 }
 
+/*
+ * @vinllen. Add index in error message so that outer code can catch
+ * the which element in bulk meeting error.
+ */
 func (e *BulkError) Error() string {
 	if len(e.ecases) == 0 {
 		return "invalid BulkError instance: no errors"
 	}
 	if len(e.ecases) == 1 {
-		return e.ecases[0].Err.Error()
+		// return e.ecases[0].Err.Error()
+		return fmt.Sprintf("index[%v], msg[%v]", e.ecases[0].Index, e.ecases[0].Err)
 	}
 	msgs := make([]string, 0, len(e.ecases))
 	seen := make(map[string]bool)
@@ -77,7 +83,8 @@ func (e *BulkError) Error() string {
 		msg := ecase.Err.Error()
 		if !seen[msg] {
 			seen[msg] = true
-			msgs = append(msgs, msg)
+			// msgs = append(msgs, msg)
+			msgs = append(msgs, fmt.Sprintf("index[%v], msg[%v]", ecase.Index, msg))
 		}
 	}
 	if len(msgs) == 1 {
