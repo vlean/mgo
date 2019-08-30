@@ -75,7 +75,7 @@ func (e *BulkError) Error() string {
 	}
 	if len(e.ecases) == 1 {
 		// return e.ecases[0].Err.Error()
-		return fmt.Sprintf("index[%v], msg[%v]", e.ecases[0].Index, e.ecases[0].Err)
+		return fmt.Sprintf("index[%v], msg[%v], dup[%v]", e.ecases[0].Index, e.ecases[0].Err, IsDup(e.ecases[0].Err))
 	}
 	msgs := make([]string, 0, len(e.ecases))
 	seen := make(map[string]bool)
@@ -84,7 +84,7 @@ func (e *BulkError) Error() string {
 		if !seen[msg] {
 			seen[msg] = true
 			// msgs = append(msgs, msg)
-			msgs = append(msgs, fmt.Sprintf("index[%v], msg[%v]", ecase.Index, msg))
+			msgs = append(msgs, fmt.Sprintf("index[%v], msg[%v], dup[%v]", ecase.Index, msg, IsDup(e.ecases[0].Err)))
 		}
 	}
 	if len(msgs) == 1 {
