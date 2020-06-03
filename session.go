@@ -2873,6 +2873,24 @@ func IsDup(err error) bool {
 	return false
 }
 
+// return the error code
+func ErrorCodeList(err error) []int {
+	switch e := err.(type) {
+	case *LastError:
+		return []int{e.Code}
+	case *QueryError:
+		return []int{e.Code}
+	case *BulkError:
+		codeList := make([]int, 0, 1)
+		for _, ecase := range e.ecases {
+			sub := ErrorCodeList(ecase.Err)
+			codeList = append(codeList, sub...)
+		}
+		return codeList
+	}
+	return nil
+}
+
 // Insert inserts one or more documents in the respective collection.  In
 // case the session is in safe mode (see the SetSafe method) and an error
 // happens while inserting the provided documents, the returned error will
