@@ -332,6 +332,7 @@ func (socket *mongoSocket) loginSASL(cred Credential) error {
 			Payload:        payload,
 		}
 		start = 0
+		cred.Mechanism = ""
 		err = socket.loginRun(cred.Source, &cmd, &res, func() error {
 			// See the comment on lock for why this is necessary.
 			lock(true)
