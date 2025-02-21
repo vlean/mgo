@@ -97,6 +97,16 @@ type queryWrapper struct {
 	Collation      *Collation  `bson:"$collation,omitempty"`
 }
 
+type msgOp struct {
+	sections   []interface{}
+	replyFunc  replyFunc
+}
+
+type msgSection struct {
+	PayloadType int32
+	Documents   []interface{}
+}
+
 func (op *queryOp) finalQuery(socket *mongoSocket) interface{} {
 	if op.flags&flagSlaveOk != 0 && socket.ServerInfo().Mongos {
 		var modeName string
@@ -416,7 +426,6 @@ var bytesBufferPool = sync.Pool{
 }
 
 func (socket *mongoSocket) Query(ops ...interface{}) (err error) {
-
 	if lops := socket.flushLogout(); len(lops) > 0 {
 		ops = append(lops, ops...)
 	}
@@ -426,23 +435,30 @@ func (socket *mongoSocket) Query(ops ...interface{}) (err error) {
 		bytesBufferPool.Put(buf[:0])
 	}()
 
-	// Serialize operations synchronously to avoid interrupting
-	// other goroutines while we can't really be sending data.
-	// Also, record id positions so that we can compute request
-	// ids at once later with the lock already held.
 	requests := make([]requestInfo, len(ops))
 	requestCount := 0
 
 	for _, op := range ops {
 		debugf("Socket %p to %s: serializing op: %#v", socket, socket.addr, op)
-		if qop, ok := op.(*queryOp); ok {
-			if cmd, ok := qop.query.(*findCmd); ok {
-				debugf("Socket %p to %s: find command: %#v", socket, socket.addr, cmd)
-			}
-		}
 		start := len(buf)
 		var replyFunc replyFunc
+
 		switch op := op.(type) {
+		case *queryOp:
+			msg := &msgOp{
+				sections: []interface{}{
+					bson.D{{Name: op.collection, Value: op.finalQuery(socket)}},
+				},
+				replyFunc: op.replyFunc,
+			}
+			buf = addHeader(buf, 2013) // OP_MSG
+			buf = addInt32(buf, 0)     // flagBits
+			// Section 0: Command
+			buf, err = addBSON(buf, msg.sections[0])
+			if err != nil {
+				return err
+			}
+			replyFunc = msg.replyFunc
 
 		case *updateOp:
 			buf = addHeader(buf, 2001)
@@ -471,24 +487,6 @@ func (socket *mongoSocket) Query(ops ...interface{}) (err error) {
 					return err
 				}
 			}
-
-		case *queryOp:
-			buf = addHeader(buf, 2004)
-			buf = addInt32(buf, int32(op.flags))
-			buf = addCString(buf, op.collection)
-			buf = addInt32(buf, op.skip)
-			buf = addInt32(buf, op.limit)
-			buf, err = addBSON(buf, op.finalQuery(socket))
-			if err != nil {
-				return err
-			}
-			if op.selector != nil {
-				buf, err = addBSON(buf, op.selector)
-				if err != nil {
-					return err
-				}
-			}
-			replyFunc = op.replyFunc
 
 		case *getMoreOp:
 			buf = addHeader(buf, 2005)
@@ -529,12 +527,16 @@ func (socket *mongoSocket) Query(ops ...interface{}) (err error) {
 			if err != nil {
 				return err
 			}
-			// erase to adapt 4.0 version
-			/*
-				buf, err = addBSON(buf, op.docs)
-				if err != nil {
-					return err
-				}*/
+			replyFunc = op.replyFunc
+
+		case *msgOp:
+			buf = addHeader(buf, 2013) // OP_MSG
+			buf = addInt32(buf, 0)     // flagBits
+			// Section 0: Command
+			buf, err = addBSON(buf, op.sections[0])
+			if err != nil {
+				return err
+			}
 			replyFunc = op.replyFunc
 
 		default:
@@ -551,15 +553,11 @@ func (socket *mongoSocket) Query(ops ...interface{}) (err error) {
 		}
 	}
 
-	// Buffer is ready for the pipe.  Lock, allocate ids, and enqueue.
-
 	socket.Lock()
 	if socket.dead != nil {
 		dead := socket.dead
 		socket.Unlock()
 		debugf("Socket %p to %s: failing query, already closed: %s", socket, socket.addr, socket.dead.Error())
-		// XXX This seems necessary in case the session is closed concurrently
-		// with a query being performed, but it's not yet tested:
 		for i := 0; i != requestCount; i++ {
 			request := &requests[i]
 			if request.replyFunc != nil {
@@ -571,7 +569,6 @@ func (socket *mongoSocket) Query(ops ...interface{}) (err error) {
 
 	wasWaiting := len(socket.replyFuncs) > 0
 
-	// Reserve id 0 for requests which should have no responses.
 	requestId := socket.nextRequestId + 1
 	if requestId == 0 {
 		requestId++
@@ -609,12 +606,10 @@ func fill(r net.Conn, b []byte) error {
 // Estimated minimum cost per socket: 1 goroutine + memory for the largest
 // document ever seen.
 func (socket *mongoSocket) readLoop() {
-	// p := make([]byte, 36) // 16 from header + 20 from OP_REPLY fixed fields
 	p := make([]byte, 16) // only fetch header 16 bytes
 	s := make([]byte, 4)
 	conn := socket.conn // No locking, conn never changes.
 	for {
-		// XXX Handle timeouts, , etc
 		err := fill(conn, p)
 		if err != nil {
 			socket.kill(err, true)
@@ -625,13 +620,8 @@ func (socket *mongoSocket) readLoop() {
 		responseTo := getInt32(p, 8)
 		opCode := getInt32(p, 12)
 
-		// Don't use socket.server.Addr here.  socket is not
-		// locked and socket.server may go away.
 		debugf("Socket %p to %s: got reply (%d bytes)", socket, socket.addr, totalLen)
 
-		_ = totalLen
-
-		// REPLY opcode may be 1(OP_REPLY) or 2011(OP_COMMANDREPLY)
 		if opCode != 1 && opCode != 2011 {
 			socket.kill(errors.New("opcode != 1 && opcode != 2011, corrupted data?"), true)
 			return
@@ -654,7 +644,6 @@ func (socket *mongoSocket) readLoop() {
 			totalLen -= 16
 
 			if replyFunc != nil && totalLen == 16 {
-				// no docs here
 				replyFunc(nil, &fakeReply, -1, nil)
 			} else {
 				for i := 0; totalLen > 0; i++ {
@@ -667,14 +656,7 @@ func (socket *mongoSocket) readLoop() {
 						return
 					}
 
-					length := int(getInt32(s, 0))
-					b := make([]byte, length)
-
-					// copy(b, s) in an efficient way.
-					b[0] = s[0]
-					b[1] = s[1]
-					b[2] = s[2]
-					b[3] = s[3]
+					b := make([]byte, int(getInt32(s, 0)))
 
 					err = fill(conn, b[4:])
 					if err != nil {
@@ -696,15 +678,12 @@ func (socket *mongoSocket) readLoop() {
 						replyFunc(nil, &fakeReply, i, b)
 					}
 
-					// XXX Do bound checking against totalLen.
-
 					totalLen -= int32(len(b))
 				}
 			}
 
 			socket.Lock()
 			if len(socket.replyFuncs) == 0 {
-				// Nothing else to read for now. Disable deadline.
 				socket.conn.SetReadDeadline(time.Time{})
 			} else {
 				socket.updateDeadline(readDeadline)
@@ -712,7 +691,6 @@ func (socket *mongoSocket) readLoop() {
 			socket.Unlock()
 
 		case 1:
-			// read more 20 bytes of OP_REPLY
 			extra := make([]byte, 20)
 			err := fill(conn, extra)
 			if err != nil {
@@ -752,12 +730,6 @@ func (socket *mongoSocket) readLoop() {
 
 					b := make([]byte, int(getInt32(s, 0)))
 
-					// copy(b, s) in an efficient way.
-					b[0] = s[0]
-					b[1] = s[1]
-					b[2] = s[2]
-					b[3] = s[3]
-
 					err = fill(conn, b[4:])
 					if err != nil {
 						if replyFunc != nil {
@@ -777,21 +749,16 @@ func (socket *mongoSocket) readLoop() {
 					if replyFunc != nil {
 						replyFunc(nil, &reply, i, b)
 					}
-
-					// XXX Do bound checking against totalLen.
 				}
 			}
 
 			socket.Lock()
 			if len(socket.replyFuncs) == 0 {
-				// Nothing else to read for now. Disable deadline.
 				socket.conn.SetReadDeadline(time.Time{})
 			} else {
 				socket.updateDeadline(readDeadline)
 			}
 			socket.Unlock()
-
-			// XXX Do bound checking against totalLen.
 		}
 	}
 }
@@ -801,7 +768,6 @@ var emptyHeader = []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 func addHeader(b []byte, opcode int) []byte {
 	i := len(b)
 	b = append(b, emptyHeader...)
-	// Enough for current opcodes.
 	b[i+12] = byte(opcode)
 	b[i+13] = byte(opcode >> 8)
 	return b
