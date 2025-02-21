@@ -91,6 +91,7 @@ type Stats struct {
 	TimesWaitedForPool  int
 	TotalPoolWaitTime   time.Duration
 	PoolTimeouts        int
+	IsMasterCalls      int
 }
 
 func (stats *Stats) cluster(delta int) {
@@ -179,6 +180,14 @@ func (stats *Stats) noticePoolTimeout(waitTime time.Duration) {
 		stats.TimesWaitedForPool++
 		stats.PoolTimeouts++
 		stats.TotalPoolWaitTime += waitTime
+		statsMutex.Unlock()
+	}
+}
+
+func (stats *Stats) isMasterCalls(delta int) {
+	if stats != nil {
+		statsMutex.Lock()
+		stats.IsMasterCalls += delta
 		statsMutex.Unlock()
 	}
 }

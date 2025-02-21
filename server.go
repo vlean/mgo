@@ -343,7 +343,7 @@ func removeSocket(sockets []*mongoSocket, socket *mongoSocket) []*mongoSocket {
 		if s == socket {
 			copy(sockets[i:], sockets[i+1:])
 			n := len(sockets) - 1
-			sockets[n] = nil
+			sockets[n] = nil // Help GC.
 			sockets = sockets[:n]
 			break
 		}
@@ -426,32 +426,31 @@ func (server *mongoServer) pinger(loop bool) {
 			time.Sleep(delay)
 		}
 		op := op
-		socket, _, err := server.AcquireSocket(0, delay)
-		if err == nil {
-			start := time.Now()
-			_, _ = socket.SimpleQuery(&op)
-			delay := time.Since(start)
-
-			server.pingWindow[server.pingIndex] = delay
-			server.pingIndex = (server.pingIndex + 1) % len(server.pingWindow)
-			server.pingCount++
-			var max time.Duration
-			for i := 0; i < len(server.pingWindow) && uint32(i) < server.pingCount; i++ {
-				if server.pingWindow[i] > max {
-					max = server.pingWindow[i]
-				}
-			}
-			socket.Release()
-			server.Lock()
-			if server.closed {
-				loop = false
-			}
-			server.pingValue = max
-			server.Unlock()
-			logf("Ping for %s is %d ms", server.Addr, max/time.Millisecond)
-		} else if err == errServerClosed {
+		socket, _, err := server.AcquireSocket(0, 0)
+		if err != nil {
 			return
 		}
+		start := time.Now()
+		_, _ = socket.SimpleQuery(&op)
+		delay := time.Since(start)
+
+		server.pingWindow[server.pingIndex] = delay
+		server.pingIndex = (server.pingIndex + 1) % len(server.pingWindow)
+		server.pingCount++
+		var max time.Duration
+		for i := 0; i < len(server.pingWindow) && uint32(i) < server.pingCount; i++ {
+			if server.pingWindow[i] > max {
+				max = server.pingWindow[i]
+			}
+		}
+		socket.Release()
+		server.Lock()
+		if server.closed {
+			loop = false
+		}
+		server.pingValue = max
+		server.Unlock()
+		logf("Ping for %s is %d ms", server.Addr, max/time.Millisecond)
 		if !loop {
 			return
 		}
@@ -636,4 +635,53 @@ func absDuration(d time.Duration) time.Duration {
 		return -d
 	}
 	return d
+}
+
+func (server *mongoServer) isMaster() error {
+	stats.isMasterCalls(+1)
+
+	socket, _, err := server.AcquireSocket(0, 0)
+	if err != nil {
+		return err
+	}
+	defer socket.Release()
+
+	// Create OP_MSG for isMaster command
+	msg := &msgOp{
+		sections: []interface{}{
+			bson.D{
+				{Name: "isMaster", Value: 1},
+				{Name: "client", Value: bson.M{
+					"driver": bson.M{
+						"name":    "mgo",
+						"version": "vinllen",
+					},
+					"os": bson.M{
+						"type":         "darwin",
+						"architecture": "amd64",
+					},
+				}},
+			},
+		},
+	}
+
+	var result isMasterResult
+	err = socket.Query(msg, nil, nil, &result)
+	if err != nil {
+		return err
+	}
+
+	server.Lock()
+	server.info.Master = result.IsMaster
+	server.info.Mongos = result.Msg == "isdbgrid"
+	server.info.Tags = result.Tags
+	server.info.SetName = result.SetName
+	server.info.MaxWireVersion = result.MaxWireVersion
+	if result.MaxWireVersion == 0 {
+		server.info.MaxWireVersion = 2 // Assume legacy server.
+	}
+	debugf("Socket %p to %s: wire version = [%d, %d]", socket, server.Addr, result.MinWireVersion, result.MaxWireVersion)
+	server.Unlock()
+
+	return nil
 }

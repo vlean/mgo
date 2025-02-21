@@ -425,6 +425,13 @@ var bytesBufferPool = sync.Pool{
 	},
 }
 
+var emptyHeader = []byte{
+	0x00, 0x00, 0x00, 0x00, // messageLength (32-bit int)
+	0x00, 0x00, 0x00, 0x00, // requestID     (32-bit int)
+	0x00, 0x00, 0x00, 0x00, // responseTo    (32-bit int)
+	0x00, 0x00,             // opCode        (16-bit int)
+}
+
 func (socket *mongoSocket) Query(ops ...interface{}) (err error) {
 	if lops := socket.flushLogout(); len(lops) > 0 {
 		ops = append(lops, ops...)
@@ -622,64 +629,76 @@ func (socket *mongoSocket) readLoop() {
 
 		debugf("Socket %p to %s: got reply (%d bytes)", socket, socket.addr, totalLen)
 
-		if opCode != 1 && opCode != 2011 {
-			socket.kill(errors.New("opcode != 1 && opcode != 2011, corrupted data?"), true)
-			return
-		}
-
+		// Handle OP_MSG (2013), OP_REPLY (1), and OP_COMMANDREPLY (2011)
 		switch opCode {
-		case 2011:
-			stats.receivedOps(+1)
-			stats.receivedDocs(+1)
-
-			fakeReply := replyOp{}
+		case 2013: // OP_MSG
+			// Read flag bits (4 bytes)
+			err = fill(conn, s)
+			if err != nil {
+				socket.kill(err, true)
+				return
+			}
+			
+			flagBits := getInt32(s, 0)
+			totalLen -= 20 // Subtract header (16) and flagBits (4)
 
 			socket.Lock()
-			replyFunc, ok := socket.replyFuncs[uint32(responseTo)]
-			if ok {
+			replyFunc := socket.replyFuncs[uint32(responseTo)]
+			if replyFunc != nil {
 				delete(socket.replyFuncs, uint32(responseTo))
 			}
 			socket.Unlock()
 
-			totalLen -= 16
+			// Read the first section
+			err = fill(conn, s)
+			if err != nil {
+				socket.kill(err, true)
+				return
+			}
 
-			if replyFunc != nil && totalLen == 16 {
-				replyFunc(nil, &fakeReply, -1, nil)
-			} else {
-				for i := 0; totalLen > 0; i++ {
-					err := fill(conn, s)
-					if err != nil {
-						if replyFunc != nil {
-							replyFunc(err, nil, -1, nil)
-						}
-						socket.kill(err, true)
-						return
-					}
+			b := make([]byte, int(getInt32(s, 0)))
+			copy(b[0:4], s)
+			err = fill(conn, b[4:])
+			if err != nil {
+				socket.kill(err, true)
+				return
+			}
 
-					b := make([]byte, int(getInt32(s, 0)))
+			totalLen -= int32(len(b))
 
-					err = fill(conn, b[4:])
-					if err != nil {
-						if replyFunc != nil {
-							replyFunc(err, nil, -1, nil)
-						}
-						socket.kill(err, true)
-						return
-					}
-
-					if globalDebug && globalLogger != nil {
-						m := bson.M{}
-						if err := bson.Unmarshal(b, m); err == nil {
-							debugf("Socket %p to %s: received document: %#v", socket, socket.addr, m)
-						}
-					}
-
-					if i == 0 && replyFunc != nil {
-						replyFunc(nil, &fakeReply, i, b)
-					}
-
-					totalLen -= int32(len(b))
+			if replyFunc != nil {
+				// Create a fake reply for compatibility
+				reply := replyOp{
+					flags:     uint32(flagBits),
+					cursorId:  0,
+					firstDoc:  0,
+					replyDocs: 1,
 				}
+				replyFunc(nil, &reply, 0, b)
+			}
+
+			// Skip any remaining sections (if present)
+			for totalLen > 0 {
+				err = fill(conn, s)
+				if err != nil {
+					socket.kill(err, true)
+					return
+				}
+				sectionLen := getInt32(s, 0)
+				if sectionLen > totalLen {
+					err = fmt.Errorf("section length (%d) larger than remaining message length (%d)", sectionLen, totalLen)
+					socket.kill(err, true)
+					return
+				}
+				
+				// Skip the section
+				remaining := make([]byte, sectionLen-4)
+				err = fill(conn, remaining)
+				if err != nil {
+					socket.kill(err, true)
+					return
+				}
+				totalLen -= sectionLen
 			}
 
 			socket.Lock()
@@ -690,7 +709,7 @@ func (socket *mongoSocket) readLoop() {
 			}
 			socket.Unlock()
 
-		case 1:
+		case 1: // OP_REPLY
 			extra := make([]byte, 20)
 			err := fill(conn, extra)
 			if err != nil {
@@ -705,12 +724,9 @@ func (socket *mongoSocket) readLoop() {
 				replyDocs: getInt32(extra, 16),
 			}
 
-			stats.receivedOps(+1)
-			stats.receivedDocs(int(reply.replyDocs))
-
 			socket.Lock()
-			replyFunc, ok := socket.replyFuncs[uint32(responseTo)]
-			if ok {
+			replyFunc := socket.replyFuncs[uint32(responseTo)]
+			if replyFunc != nil {
 				delete(socket.replyFuncs, uint32(responseTo))
 			}
 			socket.Unlock()
@@ -729,6 +745,7 @@ func (socket *mongoSocket) readLoop() {
 					}
 
 					b := make([]byte, int(getInt32(s, 0)))
+					copy(b[0:4], s)
 
 					err = fill(conn, b[4:])
 					if err != nil {
@@ -737,13 +754,6 @@ func (socket *mongoSocket) readLoop() {
 						}
 						socket.kill(err, true)
 						return
-					}
-
-					if globalDebug && globalLogger != nil {
-						m := bson.M{}
-						if err := bson.Unmarshal(b, m); err == nil {
-							debugf("Socket %p to %s: received document: %#v", socket, socket.addr, m)
-						}
 					}
 
 					if replyFunc != nil {
@@ -759,11 +769,76 @@ func (socket *mongoSocket) readLoop() {
 				socket.updateDeadline(readDeadline)
 			}
 			socket.Unlock()
+
+		case 2011: // OP_COMMANDREPLY
+			totalLen -= 16
+
+			socket.Lock()
+			replyFunc := socket.replyFuncs[uint32(responseTo)]
+			if replyFunc != nil {
+				delete(socket.replyFuncs, uint32(responseTo))
+			}
+			socket.Unlock()
+
+			if replyFunc != nil && totalLen == 16 {
+				fakeReply := replyOp{
+					flags:     0,
+					cursorId:  0,
+					firstDoc:  0,
+					replyDocs: 1,
+				}
+				replyFunc(nil, &fakeReply, -1, nil)
+			} else {
+				for i := 0; totalLen > 0; i++ {
+					err := fill(conn, s)
+					if err != nil {
+						if replyFunc != nil {
+							replyFunc(err, nil, -1, nil)
+						}
+						socket.kill(err, true)
+						return
+					}
+
+					b := make([]byte, int(getInt32(s, 0)))
+					copy(b[0:4], s)
+
+					err = fill(conn, b[4:])
+					if err != nil {
+						if replyFunc != nil {
+							replyFunc(err, nil, -1, nil)
+						}
+						socket.kill(err, true)
+						return
+					}
+
+					if replyFunc != nil {
+						fakeReply := replyOp{
+							flags:     0,
+							cursorId:  0,
+							firstDoc:  0,
+							replyDocs: 1,
+						}
+						replyFunc(nil, &fakeReply, i, b)
+					}
+
+					totalLen -= int32(len(b))
+				}
+			}
+
+			socket.Lock()
+			if len(socket.replyFuncs) == 0 {
+				socket.conn.SetReadDeadline(time.Time{})
+			} else {
+				socket.updateDeadline(readDeadline)
+			}
+			socket.Unlock()
+
+		default:
+			socket.kill(fmt.Errorf("unknown opcode %d", opCode), true)
+			return
 		}
 	}
 }
-
-var emptyHeader = []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 
 func addHeader(b []byte, opcode int) []byte {
 	i := len(b)
