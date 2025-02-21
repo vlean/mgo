@@ -459,13 +459,23 @@ func (socket *mongoSocket) Query(ops ...interface{}) (err error) {
 				replyFunc: op.replyFunc,
 			}
 			buf = addHeader(buf, 2013) // OP_MSG
-			buf = addInt32(buf, 0)     // flagBits
-			// Section 0: Command
+			var err error
 			buf, err = addBSON(buf, msg.sections[0])
 			if err != nil {
 				return err
 			}
-			replyFunc = msg.replyFunc
+			replyFunc = op.replyFunc
+
+		case *msgOp:
+			buf = addHeader(buf, 2013) // OP_MSG
+			var err error
+			for _, section := range op.sections {
+				buf, err = addBSON(buf, section)
+				if err != nil {
+					return err
+				}
+			}
+			replyFunc = op.replyFunc
 
 		case *updateOp:
 			buf = addHeader(buf, 2001)
@@ -531,16 +541,6 @@ func (socket *mongoSocket) Query(ops ...interface{}) (err error) {
 				return err
 			}
 			buf, err = addBSON(buf, op.metadata) // metadata
-			if err != nil {
-				return err
-			}
-			replyFunc = op.replyFunc
-
-		case *msgOp:
-			buf = addHeader(buf, 2013) // OP_MSG
-			buf = addInt32(buf, 0)     // flagBits
-			// Section 0: Command
-			buf, err = addBSON(buf, op.sections[0])
 			if err != nil {
 				return err
 			}

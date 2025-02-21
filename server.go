@@ -85,6 +85,7 @@ type mongoServerInfo struct {
 	Master         bool
 	Mongos         bool
 	Tags           bson.D
+	MinWireVersion int
 	MaxWireVersion int
 	SetName        string
 }
@@ -640,7 +641,7 @@ func absDuration(d time.Duration) time.Duration {
 func (server *mongoServer) isMaster() error {
 	stats.isMasterCalls(+1)
 
-	socket, _, err := server.AcquireSocket(0, 0)
+	socket, _, err := server.AcquireSocket(0, 10*time.Second) // 增加超时时间到 10 秒
 	if err != nil {
 		return err
 	}
@@ -657,7 +658,7 @@ func (server *mongoServer) isMaster() error {
 						"version": "vinllen",
 					},
 					"os": bson.M{
-						"type":         "darwin",
+						"type":         "windows",
 						"architecture": "amd64",
 					},
 				}},
@@ -676,9 +677,13 @@ func (server *mongoServer) isMaster() error {
 	server.info.Mongos = result.Msg == "isdbgrid"
 	server.info.Tags = result.Tags
 	server.info.SetName = result.SetName
+	server.info.MinWireVersion = result.MinWireVersion
 	server.info.MaxWireVersion = result.MaxWireVersion
 	if result.MaxWireVersion == 0 {
 		server.info.MaxWireVersion = 2 // Assume legacy server.
+	}
+	if result.MinWireVersion == 0 {
+		server.info.MinWireVersion = 0 // Assume legacy server.
 	}
 	debugf("Socket %p to %s: wire version = [%d, %d]", socket, server.Addr, result.MinWireVersion, result.MaxWireVersion)
 	server.Unlock()

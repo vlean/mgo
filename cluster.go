@@ -143,6 +143,7 @@ type isMasterResult struct {
 	Msg            string
 	SetName        string `bson:"setName"`
 	MaxWireVersion int    `bson:"maxWireVersion"`
+	MinWireVersion int    `bson:"minWireVersion"`
 }
 
 func (cluster *mongoCluster) isMaster(socket *mongoSocket, result *isMasterResult) error {
@@ -269,6 +270,7 @@ func (cluster *mongoCluster) syncServer(server *mongoServer) (info *mongoServerI
 		Tags:           result.Tags,
 		SetName:        result.SetName,
 		MaxWireVersion: result.MaxWireVersion,
+		MinWireVersion: result.MinWireVersion,
 	}
 
 	hosts = make([]string, 0, 1+len(result.Hosts)+len(result.Passives))
