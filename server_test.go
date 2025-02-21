@@ -29,8 +29,8 @@ package mgo_test
 import (
 	"time"
 
+	"github.com/CardInfoLink/mgo"
 	. "gopkg.in/check.v1"
-	"github.com/vinllen/mgo"
 )
 
 func (s *S) TestServerRecoversFromAbend(c *C) {

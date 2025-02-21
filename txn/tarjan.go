@@ -3,7 +3,7 @@ package txn
 import (
 	"sort"
 
-	"github.com/vinllen/mgo/bson"
+	"github.com/CardInfoLink/mgo/bson"
 )
 
 func tarjanSort(successors map[bson.ObjectId][]bson.ObjectId) [][]bson.ObjectId {

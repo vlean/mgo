@@ -1,6 +1,6 @@
 language: go
 
-go_import_path: github.com/vinllen/mgo
+go_import_path: github.com/CardInfoLink/mgo
 
 go:
     - 1.9.x
@@ -33,7 +33,7 @@ install:
 
 before_script:
     - golint  ./... | grep -v 'ID' | cat
-    - go vet github.com/vinllen/mgo/bson github.com/vinllen/mgo/txn github.com/vinllen/mgo 
+    - go vet github.com/CardInfoLink/mgo/bson github.com/CardInfoLink/mgo/txn github.com/CardInfoLink/mgo 
     - export NOIPV6=1
     - make startdb
 

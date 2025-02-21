@@ -33,7 +33,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/vinllen/mgo/bson"
+	"github.com/CardInfoLink/mgo/bson"
 )
 
 // coarseTime is used to amortise the cost of querying the timecounter (possibly

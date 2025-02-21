@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"time"
 
-	mgo "github.com/vinllen/mgo"
+	mgo "github.com/CardInfoLink/mgo"
 	"gopkg.in/tomb.v2"
 )
 
@@ -70,7 +70,7 @@ func (dbs *DBServer) start() {
 	err = dbs.server.Start()
 	if err != nil {
 		// print error to facilitate troubleshooting as the panic will be caught in a panic handler
-		fmt.Fprintf(os.Stderr, "mongod failed to start: %v\n",err)
+		fmt.Fprintf(os.Stderr, "mongod failed to start: %v\n", err)
 		panic(err)
 	}
 	dbs.tomb.Go(dbs.monitor)

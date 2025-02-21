@@ -33,7 +33,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/vinllen/mgo/bson"
+	"github.com/CardInfoLink/mgo/bson"
 
 	. "gopkg.in/check.v1"
 )

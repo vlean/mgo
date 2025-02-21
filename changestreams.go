@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/vinllen/mgo/bson"
+	"github.com/CardInfoLink/mgo/bson"
 )
 
 type FullDocument string
@@ -96,20 +96,19 @@ func (coll *Collection) Watch(pipeline interface{},
 //
 // For example:
 //
-//    pipeline := []bson.M{}
+//	pipeline := []bson.M{}
 //
-//    changeStream := collection.Watch(pipeline, ChangeStreamOptions{})
-//    for changeStream.Next(&changeDoc) {
-//        fmt.Printf("Change: %v\n", changeDoc)
-//    }
+//	changeStream := collection.Watch(pipeline, ChangeStreamOptions{})
+//	for changeStream.Next(&changeDoc) {
+//	    fmt.Printf("Change: %v\n", changeDoc)
+//	}
 //
-//    if err := changeStream.Close(); err != nil {
-//        return err
-//    }
+//	if err := changeStream.Close(); err != nil {
+//	    return err
+//	}
 //
 // If the pipeline used removes the _id field from the result, Next will error
 // because the _id field is needed to resume iteration when an error occurs.
-//
 func (changeStream *ChangeStream) Next(result interface{}) bool {
 	// the err field is being constantly overwritten and we don't want the user to
 	// attempt to read it at this point so we lock.

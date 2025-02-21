@@ -39,7 +39,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/vinllen/mgo"
+	"github.com/CardInfoLink/mgo"
 	. "gopkg.in/check.v1"
 )
 

@@ -1,9 +1,10 @@
-//+build sasl
+//go:build sasl
+// +build sasl
 
 package mgo
 
 import (
-	"github.com/vinllen/mgo/internal/sasl"
+	"github.com/CardInfoLink/mgo/internal/sasl"
 )
 
 func saslNew(cred Credential, host string) (saslStepper, error) {

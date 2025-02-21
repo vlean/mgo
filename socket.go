@@ -33,7 +33,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/vinllen/mgo/bson"
+	"github.com/CardInfoLink/mgo/bson"
 )
 
 type replyFunc func(err error, reply *replyOp, docNum int, docData []byte)
@@ -184,9 +184,9 @@ type commandOp struct {
 	commandName string
 	commandArgs interface{}
 	metadata    interface{}
-	docs interface{}
+	docs        interface{}
 
-	replyFunc  replyFunc
+	replyFunc replyFunc
 }
 
 type requestInfo struct {
@@ -520,22 +520,22 @@ func (socket *mongoSocket) Query(ops ...interface{}) (err error) {
 
 		case *commandOp:
 			buf = addHeader(buf, 2010)
-			buf = addCString(buf, op.database)    // database name
-			buf = addCString(buf, op.commandName) // command name
-			buf, err = addBSON(buf, op.commandArgs)	// command args
+			buf = addCString(buf, op.database)      // database name
+			buf = addCString(buf, op.commandName)   // command name
+			buf, err = addBSON(buf, op.commandArgs) // command args
 			if err != nil {
 				return err
 			}
-			buf, err = addBSON(buf, op.metadata)  // metadata
+			buf, err = addBSON(buf, op.metadata) // metadata
 			if err != nil {
 				return err
 			}
-            // erase to adapt 4.0 version
-            /*
-			buf, err = addBSON(buf, op.docs)
-			if err != nil {
-				return err
-			}*/
+			// erase to adapt 4.0 version
+			/*
+				buf, err = addBSON(buf, op.docs)
+				if err != nil {
+					return err
+				}*/
 			replyFunc = op.replyFunc
 
 		default:
@@ -792,7 +792,7 @@ func (socket *mongoSocket) readLoop() {
 			}
 			socket.Unlock()
 
-		// XXX Do bound checking against totalLen.
+			// XXX Do bound checking against totalLen.
 		}
 	}
 }

@@ -2,8 +2,7 @@
 //
 // For details check the following blog post:
 //
-//     http://blog.labix.org/2012/08/22/multi-doc-transactions-for-mongodb
-//
+//	http://blog.labix.org/2012/08/22/multi-doc-transactions-for-mongodb
 package txn
 
 import (
@@ -14,9 +13,9 @@ import (
 	"strings"
 	"sync"
 
-	mgo "github.com/vinllen/mgo"
+	mgo "github.com/CardInfoLink/mgo"
 
-	"github.com/vinllen/mgo/bson"
+	"github.com/CardInfoLink/mgo/bson"
 
 	crand "crypto/rand"
 	mrand "math/rand"
@@ -399,7 +398,7 @@ func (r *Runner) Resume(id bson.ObjectId) (err error) {
 //
 // Saved documents are in the format:
 //
-//     {"_id": <txn id>, <collection>: {"d": [<doc id>, ...], "r": [<doc revno>, ...]}}
+//	{"_id": <txn id>, <collection>: {"d": [<doc id>, ...], "r": [<doc revno>, ...]}}
 //
 // The document revision is the value of the txn-revno field after
 // the change has been applied. Negative values indicate the document

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/vinllen/mgo/internal/json"
+	"github.com/CardInfoLink/mgo/internal/json"
 )
 
 // UnmarshalJSON unmarshals a JSON value that may hold non-standard
