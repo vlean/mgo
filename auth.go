@@ -67,6 +67,12 @@ type saslCmd struct {
 	Payload        []byte
 }
 
+type authX509Cmd struct {
+	Authenticate int
+	User         string
+	Mechanism    string
+}
+
 type saslResult struct {
 	Ok    bool `bson:"ok"`
 	NotOk bool `bson:"code"` // Server <= 2.3.2 returns ok=1 & code>0 on errors (WTF?)
